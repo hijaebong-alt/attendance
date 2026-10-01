@@ -74,6 +74,14 @@ nav button.on{color:var(--accent);font-weight:700}
 </nav>
 <script>
 const KEY='attendance_v1', S={P:'출근',L:'지각',A:'결근',V:'휴가'}, DOW='일월화수목금토';
+// ▼ Firebase 웹앱 설정값을 여기에 붙여넣으세요 (비워두면 이 기기에만 저장됩니다)
+const firebaseConfig={apiKey: "AIzaSyCB62BWChM9ap3GlWAu_XgcZpEqradAYYk",
+  authDomain: "attendance-f6dd8.firebaseapp.com",
+  projectId: "attendance-f6dd8",
+  storageBucket: "attendance-f6dd8.firebasestorage.app",
+  messagingSenderId: "771527049264",
+  appId: "1:771527049264:web:2543ac1e5624ddff182df5"};
+const FB='https://www.gstatic.com/firebasejs/10.14.1/';
 const st={members:[],records:{}};
 let store=null, mode='load', tab='att', date=ymd(new Date()), month=date.slice(0,7), q=Promise.resolve(), tt;
 const $=id=>document.getElementById(id);
@@ -84,7 +92,7 @@ function nowT(){const d=new Date();return String(d.getHours()).padStart(2,'0')+'
 function shiftDate(n){const d=parse(date);d.setDate(d.getDate()+n);date=ymd(d);month=date.slice(0,7);render()}
 function shiftMonth(n){const[y,m]=month.split('-').map(Number);month=ymd(new Date(y,m-1+n,1)).slice(0,7);render()}
 function toast(m){let t=$('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';document.body.appendChild(t)}t.textContent=m;t.style.display='block';clearTimeout(tt);tt=setTimeout(()=>t.style.display='none',4000)}
-function errMsg(e){return e&&e.code==='invalid_argument'?'저장 권한이 없습니다. 공유 설정에서 참여자(Contributor) 이상으로 초대해야 합니다.':'저장하지 못했습니다. 잠시 후 다시 시도하세요.'}
+function errMsg(e){return e&&(e.code==='invalid_argument'||e.code==='permission-denied')?'저장 권한이 없습니다. Firestore 규칙 또는 공유 설정을 확인하세요.':'저장하지 못했습니다. 잠시 후 다시 시도하세요.'}
 function enqueue(fn){q=q.then(fn).catch(e=>toast(errMsg(e)))}
 function persist(){if(mode==='local'){try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){}}}
 function cell(day,id){const x=(st.records[day]||{})[id];return x&&x.s?x:null}
@@ -92,8 +100,7 @@ function cell(day,id){const x=(st.records[day]||{})[id];return x&&x.s?x:null}
 function writeRec(day,map){
   st.records[day]=Object.assign({},st.records[day]||{},map);persist();render();
   if(mode!=='live')return;
-  enqueue(async()=>{const ref=store.doc('days/'+day);
-    try{await ref.update({records:map})}catch(e){if(e&&e.code==='invalid_argument')await ref.set({records:map});else throw e}});
+  enqueue(()=>store.doc('days/'+day).merge({records:map}));
 }
 function mark(id,s){const c=cell(date,id);writeRec(date,{[id]:c&&c.s===s?{s:'',t:''}:{s,t:(s==='P'||s==='L')?nowT():''}})}
 function markAll(){const m={};st.members.forEach(x=>{if(!cell(date,x.id))m[x.id]={s:'P',t:nowT()}});if(Object.keys(m).length)writeRec(date,m)}
@@ -187,10 +194,22 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.
 render();
 
 (async()=>{
-  let d=null;
-  try{if(window.claude&&claude.use)d=await claude.use('db')}catch(e){}
-  if(d){
-    store=d;mode='live';
+  try{
+    if(firebaseConfig.projectId){
+      const[A,F]=await Promise.all([import(FB+'firebase-app.js'),import(FB+'firebase-firestore.js')]);
+      const fdb=F.getFirestore(A.initializeApp(firebaseConfig));
+      store={
+        collection:n=>({onSnapshot:(f,e)=>F.onSnapshot(F.collection(fdb,n),f,e),add:x=>F.addDoc(F.collection(fdb,n),x)}),
+        doc:p=>{const[c,i]=p.split('/'),r=F.doc(fdb,c,i);return{merge:x=>F.setDoc(r,x,{merge:true}),delete:()=>F.deleteDoc(r)}}
+      };
+    }else if(window.claude&&claude.use){
+      const d=await claude.use('db');
+      if(d)store={collection:n=>d.collection(n),doc:p=>{const r=d.doc(p);return{delete:()=>r.delete(),
+        merge:async x=>{try{await r.update(x)}catch(e){if(e&&e.code==='invalid_argument')await r.set(x);else throw e}}}}};
+    }
+  }catch(e){console.error(e);toast('공유 저장소에 연결하지 못했습니다.')}
+  if(store){
+    mode='live';
     store.collection('members').onSnapshot(snap=>{
       st.members=snap.docs.map(x=>Object.assign({id:x.id},x.data())).sort((a,b)=>(a.ts||0)-(b.ts||0));render();
     },()=>toast('회원 목록을 불러오지 못했습니다.'));
